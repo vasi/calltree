@@ -1,0 +1,36 @@
+calltree: Log function calls with dtrace 
+========================================
+
+Usage: calltree [OPTIONS] COMMAND
+
+For example, given the following C source in answer.c:
+
+	#include <stdio.h>
+	int foo(void) { return 41; }
+	int bar(int i) { return i + foo(); }
+	int main(void) {
+		printf("%d\n", bar(1));
+	}
+
+$ clang -o answer answer.c
+$ calltree ./answer
+42
+CPU FUNCTION                                 
+  1  -> start                                  
+  1    -> main                                 
+  1      -> bar                                
+  1        -> foo                              
+  1        <- foo                              
+  1      <- bar                                
+  1    <- main                                 
+
+
+You must have dtrace installed, and root privileges are required. Executables that have been stripped will not work.
+
+Various arguments are available to change which functions are logged, run 'calltree --help' for more information.
+
+Note that this tool is rather under-tested, consider it a prototype.
+
+
+(C) 2008 Dave Vasilevsky <dave@vasilevsky.ca>
+Licensing: Simplified BSD License, see LICENSE file

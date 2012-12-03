@@ -1,0 +1,87 @@
+#!/usr/bin/ruby -w
+# (C) 2008 Dave Vasilevsky <dave@vasilevsky.ca>
+# Licensing: Simplified BSD License, see LICENSE file
+if Process.euid != 0
+	exec('sudo', $0, *ARGV) or raise "Can't exec sudo!"
+end
+
+require 'optparse'
+require 'set'
+
+verbose = false
+filters = Set[:dyld, :cplus]
+libs = []
+output = nil
+
+OptionParser.new do |opts|
+	opts.banner = <<BANNER
+Display the function-call tree of a program.
+Usage: calltree [OPTIONS] COMMAND ARG1 ..."
+BANNER
+	
+	opts.on('-l', '--libs LIBS', "Display calls from given libraries") \
+		{ |l| libs.concat(l.split(',')) }
+	opts.on('-d', '--dyld', "Include dyld functions") { filters.delete(:dyld) }
+	opts.on('-c', '--cplus', "Include standard C++ functions") \
+		{ filters.delete(:cplus) }
+	opts.on('-o', '--output FILE', "Send output to a file") \
+		{ |file| output = file }
+	opts.on('-v', '--verbose', "Be verbose") \
+		{ verbose = true }
+	
+	opts.on_tail('-h', '--help', "Show this help") { puts opts; exit }
+end.parse!
+
+def script(libs, filters, verbose)
+	script = ""
+	nl = verbose ? '' : '\n'
+	action = "{ printf(\" #{nl}\") }"
+	
+	libs << 'a.out' if libs.empty?
+	libs.uniq!
+	if all = libs.include?('*')
+		all = true
+		$stderr.puts "WARNING: Tracing all calls can be very slow " +
+			"and produce large volumes of output!"
+	end
+	if syscall = libs.include?('syscall')
+		libs.delete('syscall')
+	end
+	
+	# filters
+	preds = []
+	if filters.include?(:dyld)
+		preds << 'substr(probefunc, 0, 5) != "dyld_"'
+	end
+	if filters.include?(:cplus)
+		preds << 'strstr(probefunc, "std::") == 0' <<
+			'strstr(probefunc, "__gnu_cxx::") == 0'
+	end
+	pred = preds.empty? ? '' : "/ #{preds.join(' && ')} /"
+	
+	# PID provider
+	mods = all ? '' : libs
+	mods.map! { |x| ['', 'a.out'].include?(x) ? x : (x + "*") }
+	probes = []
+	mods.each do |m|
+		%w[entry return].each { |n| probes << "pid$target:#{m}::#{n}" }
+	end
+	script << probes.join(',') << pred << action
+	
+	# Syscall provider
+	# TODO: Stop both entry and return from showing
+	if syscall
+		script << 'syscall:::entry, syscall:::return / pid == $target /' +
+			action
+	end
+	
+	return script
+end
+
+command = ARGV.map { |x| Regexp.quote(x) }.join(' ')
+script = script(libs, filters, verbose)
+puts script
+dtrace = ['dtrace', '-F', '-n', script, '-c', command]
+dtrace << '-o' << output if output
+dtrace << '-q' unless verbose
+exec(*dtrace) or raise "Can't exec dtrace!"
